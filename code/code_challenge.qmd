@@ -1,0 +1,114 @@
+---
+title: "Data Challenge"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr) 
+library(geodist)
+library(leaflet)
+library(glue)
+library(tibble)
+library(purrr)
+
+```
+
+```{r}
+# ---- Load data ----
+file <- "~/Downloads/starbucks_locations.csv"   # <- EDIT: path to your CSV
+if (!file.exists(file)) stop(paste("File not found:", file))
+
+sb <- utils::read.csv(file, stringsAsFactors = FALSE, check.names = FALSE)
+
+# Normalize column names and basic checks
+names(sb) <- tolower(names(sb))
+req <- c("latitude","longitude")
+miss <- setdiff(req, names(sb))
+if (length(miss)) stop(paste("Missing required column(s):", paste(miss, collapse=", ")))
+
+# Coerce to numeric and drop missing rows
+sb$latitude  <- suppressWarnings(as.numeric(sb$latitude))
+sb$longitude <- suppressWarnings(as.numeric(sb$longitude))
+sb <- sb[!is.na(sb$latitude) & !is.na(sb$longitude), , drop = FALSE]
+
+# Add optional columns if absent
+if (!"name" %in% names(sb))    sb$name    <- "Starbucks"
+if (!"address" %in% names(sb)) sb$address <- NA_character_
+
+# ---- Distance helpers (no external packages) ----
+haversine_km <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371.0088
+  to_rad <- function(x) x * pi / 180
+  dlat <- to_rad(lat2 - lat1)
+  dlon <- to_rad(lon2 - lon1)
+  a <- sin(dlat/2)^2 + cos(to_rad(lat1)) * cos(to_rad(lat2)) * sin(dlon/2)^2
+  c <- 2 * atan2(sqrt(a), sqrt(1 - a))
+  R * c
+}
+
+# ---- Core function required by the assignment ----
+# starbucks_df: data.frame with latitude, longitude (and optional name, address)
+# user_lat, user_lon: numeric (user's location)
+# n: how many nearest to return
+nearest_starbucks <- function(starbucks_df, user_lat, user_lon, n = 5) {
+  stopifnot(is.numeric(user_lat), is.numeric(user_lon), is.numeric(n), n >= 1)
+  d <- haversine_km(
+    lat1 = user_lat, lon1 = user_lon,
+    lat2 = starbucks_df$latitude, lon2 = starbucks_df$longitude
+  )
+  o <- order(d)                       # ascending by distance
+  take <- head(o, n)                  # top n
+  out <- data.frame(
+    rank = seq_len(length(take)),
+    name = starbucks_df$name[take],
+    address = starbucks_df$address[take],
+    latitude = starbucks_df$latitude[take],
+    longitude = starbucks_df$longitude[take],
+    distance_km = round(d[take], 3),
+    stringsAsFactors = FALSE
+  )
+  out
+}
+
+# ---- Prompt the user for inputs ----
+read_num <- function(prompt) {
+  x <- suppressWarnings(as.numeric(readline(prompt)))
+  if (is.na(x)) stop("Invalid numeric input.")
+  x
+}
+
+cat("Enter your location and N when prompted.\n")
+user_lat <- read_num("Latitude:  ")
+user_lon <- read_num("Longitude: ")
+N        <- as.integer(read_num("How many nearest Starbucks (N): "))
+if (is.na(N) || N < 1) stop("N must be a positive integer.")
+
+# ---- Compute + print result ----
+result <- nearest_starbucks(sb, user_lat, user_lon, N)
+print(result, row.names = FALSE)
+```
