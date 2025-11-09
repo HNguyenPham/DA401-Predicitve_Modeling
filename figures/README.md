@@ -1,3 +1,3 @@
-# Figures Folder
+# Result Folder
 
-This folder contains figures files for your project.
+This folder contains result files for your project.
