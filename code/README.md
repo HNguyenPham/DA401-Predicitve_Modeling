@@ -4,36 +4,34 @@ This folder contains the analysis script for predictive modeling of fatal outcom
 `Final_Report_[Pham].qmd` - Complete analysis pipeline including data preprocessing, MICE imputation, exploratory analysis, LASSO logistic regression with year fixed effects, Random Forest modeling, and performance evaluation
 
 ## Required Libraries
-Data manipulation and visualization
-library(tidyverse)
-library(dplyr)
-library(tibble)
+### Data Manipulation and Visualization
+- `tidyverse`, `dplyr`, `tibble`
 
-Regression modeling
-library(fixest)        # Fixed effects models
-library(glmnet)        # LASSO regularization
-library(gglasso)       # Group LASSO
-library(glinternet)    # Interaction models
+### Regression Modeling
+- `fixest` (Fixed effects models)
+- `glmnet` (LASSO regularization)
+- `gglasso` (Group LASSO)
+- `glinternet` (Interaction models)
 
-Machine learning
-library(randomForest)  # Random Forest classification
-library(caret)         # Model training and evaluation
+### Machine Learning
+- `randomForest` (Random Forest classification)
+- `caret` (Model training and evaluation)
 
-Missing data
-library(mice)          # Multiple imputation
+### Missing Data Handling
+- `mice` (Multiple imputation)
 
-Model diagnostics
-library(car)           # VIF analysis
-library(pROC)          # ROC curves and AUC
-library(ggfortify)     # Model diagnostics plots
-library(leaps)         # Variable selection
+### Model Diagnostics
+- `car` (VIF analysis)
+- `pROC` (ROC curves and AUC)
+- `ggfortify` (Diagnostic plots)
+- `leaps` (Variable selection)
 
-Tables and output
-library(modelsummary)  # Regression tables
-library(knitr)         # Report generation
-library(kableExtra)    # Enhanced tables
-library(flextable)     # Flexible tables
-library(officer)       # Document formatting
+### Tables and Reporting
+- `modelsummary` (Regression tables)
+- `knitr` (Report generation)
+- `kableExtra` (Enhanced tables)
+- `flextable` (Flexible tables)
+- `officer` (Document formatting)
 
 ## Usage
 - Install required packages: install.packages(c("tidyverse", "fixest", "glmnet", ...))
