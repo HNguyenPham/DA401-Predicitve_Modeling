@@ -1,3 +1,3 @@
 # Writing Folder
 
-This folder contains writing files for your project.
+This folder contains writing files for my project.
