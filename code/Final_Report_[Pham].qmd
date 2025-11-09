@@ -1,0 +1,914 @@
+---
+title: "Final project: Predictive Models for Aviation Safety"
+author: "Nguyen Pham"
+institute: "Denison University"
+format: 
+  html:
+    theme: lux # Check here for more themes: https://quarto.org/docs/output-formats/html-themes.html
+    code-tools: true
+    code-fold: true
+    code-summary: "Code"
+    code-copy: hover
+    link-external-newwindow: true
+    tbl-cap-location: top
+    fig-cap-location: bottom
+    toc: true          # Enable the Table of Contents
+    toc-depth: 2       # Specify depth of headings to include in ToC
+    toc-location: left # Location for HTML ToC (left or right)
+
+self-contained: true
+editor: source
+---
+
+```{r setup, include=FALSE}
+# DO NOT EDIT THIS
+
+knitr::opts_chunk$set(fig.align = 'center')
+knitr::opts_chunk$set(out.width = '90%')
+knitr::opts_chunk$set(results = 'hold')
+knitr::opts_chunk$set(fig.show = 'hold')
+knitr::opts_chunk$set(error = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+par(mar = c(4.1, 4.1, 1.1, 4.1))
+
+hooks = knitr::knit_hooks$get()
+hook_foldable = function(type) {
+  force(type)
+  function(x, options) {
+    res = hooks[[type]](x, options)
+    
+    if (isFALSE(options[[paste0("fold.", type)]])) return(res)
+    
+    paste0(
+      "<details open><summary>", gsub("^p", "P", gsub("^o", "O", type)), "</summary>\n\n",
+      res,
+      "\n\n</details>"
+    )
+  }
+}
+
+knitr::knit_hooks$set(
+  output = hook_foldable("output"),
+  plot = hook_foldable("plot")
+)
+
+Q <- 0
+```
+
+
+
+```{r load library, include=FALSE}
+
+library(tidyverse)
+library(fixest)
+library(modelsummary)
+library(ggfortify)
+library(leaps)
+library(knitr)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(textstem)
+library(textclean)
+library(textshape)
+library(glmnet)
+library(randomForest)
+library(leaflet)
+library(car)
+library(tibble)
+library(gglasso)
+library(dplyr)
+library(pROC)
+library(glinternet)
+library(mice)
+library(flextable)
+library(officer)
+library(caret)
+library(kableExtra)
+```
+
+
+```{r read file}
+#import dataset
+original_data <- read.csv("~/Downloads/DA401_Pham/Data/original_data.csv")
+
+```
+
+
+```{r pre-processing}
+original_data$far_part <- as.factor(original_data$far_part)
+#replace blank with NA
+original_data[original_data==""] <- NA
+#delete variables with more than 50% of missing values
+analysis_data <- original_data[, colMeans(is.na(original_data)) < 0.5]
+
+# Create binary variable for fatal vs non-fatal accidents
+analysis_data$fatal <- ifelse(analysis_data$total_fatal>=1,1,0)
+```
+
+
+```{r pre-processing}
+analysis_data <- analysis_data %>%
+  mutate(
+    cause_factor = case_when(
+      grepl("Personnel", probable_cause, ignore.case = TRUE) ~ "Personnel",
+      grepl("Organizational", probable_cause, ignore.case = TRUE) ~ "Organizational",
+      grepl("Aircraft", probable_cause, ignore.case = TRUE) ~ "Aircraft",
+      grepl("Environmental", probable_cause, ignore.case = TRUE) ~ "Environmental",
+      TRUE ~ "Not Determined" # For rows that don't match any of the above criteria
+    ))
+```
+
+
+```{r pre-processing}
+
+#convert latitude and longitude to numerical 
+
+convert_to_numeric <- function(coord) {
+  if (is.na(coord)) return(NA)  # Handle missing values
+  
+  # Process Latitude (7 characters) or Longitude (8 characters)
+  if (nchar(coord) == 7) { 
+    degrees <- as.numeric(substr(coord, 1, 2))
+    minutes <- as.numeric(substr(coord, 3, 4))
+    seconds <- as.numeric(substr(coord, 5, 6))
+    direction <- substr(coord, 7, 7)
+  } else if (nchar(coord) == 8) {  
+    degrees <- as.numeric(substr(coord, 1, 3))
+    minutes <- as.numeric(substr(coord, 4, 5))
+    seconds <- as.numeric(substr(coord, 6, 7))
+    direction <- substr(coord, 8, 8)
+  } else {
+    return(NA)  # Skip invalid formats
+  }
+
+  # Convert to decimal degrees
+  decimal <- degrees + (minutes / 60) + (seconds / 3600)
+
+  # Adjust for S/W
+  if (direction %in% c("S", "W")) {
+    decimal <- -decimal
+  }
+  return(decimal)
+}
+
+analysis_data <- analysis_data %>%
+  mutate(
+    latitude = sapply(latitude, convert_to_numeric),
+    longitude = sapply(longitude, convert_to_numeric)
+  )
+
+```
+
+
+```{r group phase of flight}
+#group phase of flight
+analysis_data$phase_group <- with(analysis_data, 
+  ifelse(phase_group %in% c(100, 150, 151, 152, 153, 154), "Standing/Parking",
+  ifelse(phase_group %in% c(200, 201, 202, 203, 250, 251, 252, 253), "Taxi",
+  ifelse(phase_group %in% c(300, 301, 350), "Takeoff",
+  ifelse(phase_group %in% c(400, 401, 402, 403, 404, 405, 450, 452), "Initial Climb",
+  ifelse(phase_group %in% c(500, 501, 502, 503, 504, 505, 506, 507, 508, 509), "En Route",
+  ifelse(phase_group %in% c(550, 551, 552, 553), "Descent",
+  ifelse(phase_group == 750, "Approach",
+  ifelse(phase_group == 800, "Landing",
+  ifelse(phase_group == 990, "Unknown/Other", NA))))))))))
+  
+analysis_data$phase_group <- factor(analysis_data$phase_group,
+                                   levels=c("Standing/Parking", "Taxi", "Takeoff", "Initial Climb",
+                                            "En Route", "Descent", "Approach", "Landing", "Unknown/Other"))
+
+```
+
+
+
+```{r summary statistic}
+summary <- analysis_data %>%
+  summarise(across(where(is.numeric), list(
+    Mean = ~mean(.x, na.rm = TRUE),
+    Median = ~median(.x, na.rm = TRUE),
+    SD = ~sd(.x, na.rm = TRUE),
+    Min =  ~min(.x, na.rm = TRUE),
+    Max =  ~max(.x, na.rm = TRUE)
+  ), .names = "{.col}_{.fn}"))
+
+# ---- 2. Reshape into long (tidy) format ----
+summary_long <- summary %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Variable", ".value"),
+    names_pattern = "(.*)_(Mean|Median|SD|Min|Max)"
+  ) %>%
+  arrange(Variable)
+
+# ---- 3. Format results into a nice table ----
+summary_table <- summary_long %>%
+  flextable() %>%
+  set_caption("Summary statistics for numeric predictors") %>%
+  colformat_double(digits = 2) %>%
+  autofit() %>%
+  theme_vanilla()
+
+# ---- 4. Export to Word document ----
+doc <- read_docx() %>%
+  body_add_par("Summary statistics for numeric predictors", style = "heading 1") %>%
+  body_add_flextable(summary_table)
+print(doc, target = "Summary_statistics.docx")
+
+```
+ 
+
+```{r calculate % missing values of each variable}
+# Calculate % missing values for each column
+missing_pct <- colSums(is.na(original_data)) / nrow(original_data) * 100
+
+# Convert to a nice data frame
+missing_summary <- data.frame(
+  Variable = names(missing_pct),
+  Percent_Missing = round(missing_pct, 2)
+)
+
+# View result
+print(missing_summary)
+
+```
+
+
+
+```{r imputation}
+analysis_data1 <- analysis_data %>% select(-c(probable_cause, acft_make, acft_model, total_fatal,event_state, event_ID, cause_factor))
+analysis_data1$crew_sex <- factor(analysis_data1$crew_sex, levels = c("M", "F"))
+analysis_data1$crew_cat <- factor(analysis_data1$crew_cat, levels = c("PLT", "CPLT"))
+analysis_data1$wx_cond <- factor(analysis_data1$wx_cond, levels = c("VMC","IMC" ,"UNK"))
+analysis_data1$med_certf <- factor(analysis_data1$med_certf, levels = c("CL1", "CL2","CL3","NONE", "UNK"))
+
+
+invisible(capture.output(
+imputed_data <- mice(analysis_data1, m = 1, maxit = 10, method = 'pmm', seed = 123, printFlag = FALSE)
+))
+data_imputed <- complete(imputed_data,1)
+```
+
+
+
+
+```{r}
+# Calculate statistics before and after imputation
+total_rows_before <- nrow(analysis_data1)
+total_na_before <- sum(is.na(analysis_data1))
+rows_with_na_before <- sum(rowSums(is.na(analysis_data1)) > 0)
+
+total_rows_after1 <- nrow(data_imputed)
+total_na_after1 <- sum(is.na(data_imputed))
+rows_with_na_after1 <- sum(rowSums(is.na(data_imputed)) > 0)
+
+# Calculate derived metrics
+rows_removed1 <- total_rows_before - total_rows_after1
+percent_rows_with_na_before <- (rows_with_na_before / total_rows_before) * 100
+percent_rows_with_na_after <- (rows_with_na_after1 / total_rows_after1) * 100
+percent_rows_removed1 <- (rows_removed1 / total_rows_before) * 100
+
+# Store results in a table
+na_analysis <- data.frame(
+  Metric = c(
+    "Total Rows", 
+    "Total NA Values", 
+    "Rows with NA (%)", 
+    "Rows Removed (%)"
+  ),
+  Before = c(
+    total_rows_before,
+    total_na_before,
+    round(percent_rows_with_na_before, 2),
+    "-"
+  ),
+  After = c(
+    total_rows_after1,
+    total_na_after1,
+    round(percent_rows_with_na_after, 2),
+    round(percent_rows_removed1, 2)
+  )
+)
+
+# Nicely formatted table
+na_analysis %>%
+  kbl(
+    col.names = c("Metric", "Before", "After Imputation"),
+    caption = "NA Analysis Before and After Imputation",
+    align = "lcc"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+
+#data exploration 
+
+```{r bar chart }
+
+# Filter for fatal accidents first
+fatal_cause_counts <- analysis_data %>%
+  filter(fatal == 1) %>%  # Only fatal accidents
+  count(cause_factor, name = "Count")
+
+ggplot(fatal_cause_counts, aes(x = reorder(cause_factor, -Count), y = Count, fill = cause_factor)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Count of Fatal Accident Causes",
+    x = "Cause Factor",
+    y = "Number of Fatal Accidents"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Aircraft" = "darkgreen",
+      "Personnel" = "gray",
+      "Not Determined" = "gray",
+      "Environmental" = "gray",
+      "Organizational" = "gray"
+    )
+  ) +  # ← closing parenthesis fixed here
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+```
+
+
+```{r line graph}
+# -------------------------------------------------------
+# 1. Categorize aircraft type
+# -------------------------------------------------------
+analysis_data <- analysis_data %>%
+  mutate(
+    aircraft_type = case_when(
+      far_part == 121 ~ "Air Carrier",
+      far_part == 135 ~ "Air Taxi & Commuter"
+    )
+  )
+
+# -------------------------------------------------------
+# 2. Prepare year and summarize fatal accidents
+# -------------------------------------------------------
+analysis_data$event_year <- as.numeric(analysis_data$event_year)
+
+accident_trend <- analysis_data %>%
+  group_by(event_year, aircraft_type) %>%
+  summarise(
+    fatal_accidents = sum(fatal == 1, na.rm = TRUE),  # count only fatal cases
+    .groups = "drop"
+  )
+
+accident_trend$aircraft_type <- as.factor(accident_trend$aircraft_type)
+
+# -------------------------------------------------------
+# 3. Plot fatal accident trends
+# -------------------------------------------------------
+ggplot(accident_trend, aes(
+  x = event_year, 
+  y = fatal_accidents, 
+  color = aircraft_type, 
+  linetype = aircraft_type,     # add this
+  group = aircraft_type
+)) +
+  geom_line(size = 0.8) +
+  labs(
+    title = "Trends in Fatal Aircraft Accidents by Type",
+    x = "Year",
+    y = "Number of Fatal Accidents",
+    color = "Aircraft Type",
+    linetype = "Aircraft Type"   # add this so the legend shows line style too
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c(
+    "Air Carrier" = "blue", 
+    "Air Taxi & Commuter" = "red"
+  )) +
+  scale_linetype_manual(values = c(
+    "Air Carrier" = "solid",
+    "Air Taxi & Commuter" = "dashed"
+  )) +
+  theme(
+    plot.title = element_text(size = 12, hjust = 0.5),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 9),
+    legend.text = element_text(size = 9),
+    legend.title = element_text(size = 10),
+    legend.position = "bottom"
+  )
+
+
+```
+
+```{r}
+sapply(data_imputed, is.character)
+
+```
+
+
+```{r}
+str(data_imputed)
+
+```
+
+```{r}
+fatal_tab <- table(data_imputed$fatal)
+
+# Convert the table to a data frame for use with kableExtra
+fatal_tabdf <- as.data.frame(fatal_tab)
+
+colnames(fatal_tabdf) <- c("Class", "Count")
+
+# Format the table with kableExtra
+fatal_tabdf %>%
+  kbl(
+    caption = "Class Distribution of Aircraft System Causes",
+    col.names = c("Class", "Count"),
+    align = "lc"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+
+```{r reference gr}
+cat("Reference groups:\n")
+for (v in names(Filter(is.factor, data_imputed))) {
+  ref <- levels(data_imputed[[v]])[1]
+  cat(v, "→", ref, "\n")
+}
+```
+
+
+```{r without year fe}
+# Create model matrix (no fixed effects, remove intercept)
+X <- model.matrix(fatal ~ . - 1, data = data_imputed)
+y <- data_imputed$fatal
+
+# -------------------------------------------------------
+# 2. Train/Test Split
+# -------------------------------------------------------
+set.seed(123)
+train_indices <- createDataPartition(y, p = 0.6, list = FALSE)
+X_train <- X[train_indices, ]
+X_test  <- X[-train_indices, ]
+y_train <- y[train_indices]
+y_test  <- y[-train_indices]
+
+# -------------------------------------------------------
+# 3. Fit Standard Lasso (no fixed effect)
+# -------------------------------------------------------
+set.seed(123)
+lasso_model <- cv.glmnet(
+  x = X_train,
+  y = y_train,
+  alpha = 1,                # pure LASSO
+  family = "binomial",
+  type.measure = "deviance",
+  nfolds = 10,
+  standardize = TRUE
+)
+
+# -------------------------------------------------------
+# 4. Evaluate Model
+# -------------------------------------------------------
+best_lambda <- lasso_model$lambda.min
+cat("Best Lambda:", best_lambda, "\n")
+
+predictions <- predict(lasso_model, s = "lambda.min", newx = X_test, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+accuracy <- mean(predicted_classes == y_test)
+cat("Test Accuracy:", round(accuracy, 3), "\n")
+
+# -------------------------------------------------------
+# 5. Extract Non-Zero Coefficients
+# -------------------------------------------------------
+coef_matrix <- as.matrix(coef(lasso_model, s = "lambda.min"))
+non_zero_coef <- data.frame(
+  Variable = rownames(coef_matrix),
+  Coefficient = as.numeric(coef_matrix[, 1])
+) %>%
+  filter(Coefficient != 0) %>%
+  mutate(Odds_Ratio = exp(Coefficient))
+
+# -------------------------------------------------------
+# 6. Display Table
+# -------------------------------------------------------
+non_zero_coef %>%
+  kbl(
+    caption = "Lasso Logistic Regression (No Year Fixed Effects): Non-Zero Coefficients",
+    col.names = c("Variable", "Coefficient", "Odds Ratio"),
+    align = "lcc",
+    digits = 4
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+
+```{r}
+# Create a flextable for Word export
+ft <- flextable(non_zero_coef)
+ft <- autofit(ft)
+ft <- set_caption(ft, caption = "Lasso Logistic Regression with Year Fixed Effects (Non-Zero Coefficients)")
+
+# Save to Word document
+doc <- read_docx() %>%
+  body_add_par("Lasso Logistic Regression Results", style = "heading 1") %>%
+  body_add_flextable(ft) %>%
+  body_add_par("")  # Add blank line for spacing
+
+print(doc, target = "Lasso_Results.docx")
+```
+
+
+
+```{r correlation}
+train_data <- as.data.frame(X_train)
+train_data_vif <- train_data %>%
+  select(-phase_groupTaxi)
+train_data$fatal <- y_train  
+num_vars <- train_data %>%
+  select(where(is.numeric)) %>%
+  select(-fatal)
+
+continuous_vars <- c("event_time","temperature", "crew_age", "visibility", "wind_speed", "latitude", "longitude")
+corr_matrix <- cor(train_data[, continuous_vars], use = "pairwise.complete.obs")
+
+corrplot(corr_matrix, method = "color",
+         tl.cex = 0.7, number.cex = 0.6, addCoef.col = "black",
+         tl.col = "black", col = colorRampPalette(c("blue", "white", "red"))(200),
+         title = "Correlation Heatmap of Numeric Predictors",
+         mar = c(0, 0, 1, 0))
+```
+
+
+```{r correlation}
+if ("phase_groupStanding/Parking" %in% colnames(train_data)) {
+  train_data <- train_data %>% select(-"phase_groupStanding/Parking")
+}
+
+# Step 3a: remove near-zero variance predictors
+nzv <- nearZeroVar(train_data)
+if (length(nzv) > 0) train_data <- train_data[, -nzv]
+
+# Step 3b: remove duplicate columns
+train_data <- train_data[, !duplicated(t(train_data))]
+
+# -------------------------------------------------------
+# 4. Fit GLM and Handle Multicollinearity
+# -------------------------------------------------------
+glm_model <- glm(fatal ~ ., data = train_data, family = binomial)
+
+# Step 4a: detect aliasing (perfect collinearity)
+alias_info <- alias(glm_model)
+if (length(alias_info$Complete) > 0) {
+  alias_vars <- names(alias_info$Complete)
+  train_data <- train_data %>% select(-all_of(alias_vars))
+  glm_model <- glm(fatal ~ ., data = train_data, family = binomial)
+}
+
+# -------------------------------------------------------
+# 5. Compute and Visualize VIF
+# -------------------------------------------------------
+vif_values <- as.data.frame(vif(glm_model))
+vif_df <- tibble::rownames_to_column(vif_values, var = "Variable")
+colnames(vif_df)[2] <- "VIF"
+
+# Sort and plot
+ggplot(vif_df, aes(x = reorder(Variable, VIF), y = VIF, fill = VIF)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "orange", linewidth = 1) +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "red", linewidth = 1) +
+  scale_fill_gradient(low = "blue", high = "tomato") +
+  labs(
+    title = "Variance Inflation Factors (VIF)",
+    x = "Variable",
+    y = "VIF"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+
+
+
+
+
+```{r lasso year fixed effect}
+# Treat year as a fixed effect
+data_imputed$event_year <- as.factor(data_imputed$event_year)
+
+# Create model matrix (includes year dummies, remove intercept)
+X <- model.matrix(fatal ~ . - 1, data = data_imputed)
+y <- data_imputed$fatal
+
+# Identify event_year columns (fixed effects)
+year_cols <- grep("^event_year", colnames(X))
+
+# Penalty factor: 0 = no penalty for year dummies
+penalty_factors <- rep(1, ncol(X))
+penalty_factors[year_cols] <- 0
+
+# -------------------------------------------------------
+# 2. Train/Test Split
+# -------------------------------------------------------
+set.seed(123)
+train_indices <- createDataPartition(y, p = 0.6, list = FALSE)
+X_train <- X[train_indices, ]
+X_test  <- X[-train_indices, ]
+y_train <- y[train_indices]
+y_test  <- y[-train_indices]
+```
+
+
+```{r lasso year fixed effect}
+# -------------------------------------------------------
+# 3. Fit Lasso (alpha = 1)
+# -------------------------------------------------------
+set.seed(123)
+lasso_model <- cv.glmnet(
+  x = X_train,
+  y = y_train,
+  alpha = 1,                # LASSO
+  family = "binomial",
+  type.measure = "deviance",
+  nfolds = 10,
+  standardize = TRUE,
+  penalty.factor = penalty_factors  # Keep year fixed effects
+)
+
+# -------------------------------------------------------
+# 4. Evaluate Model
+# -------------------------------------------------------
+best_lambda <- lasso_model$lambda.min
+cat("Best Lambda:", best_lambda, "\n")
+
+predictions <- predict(lasso_model, s = "lambda.min", newx = X_test, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+accuracy <- mean(predicted_classes == y_test)
+cat("Test Accuracy:", round(accuracy, 3), "\n")
+
+# -------------------------------------------------------
+# 5. Extract Non-Zero Coefficients
+# -------------------------------------------------------
+coef_matrix <- as.matrix(coef(lasso_model, s = "lambda.min"))
+non_zero_coef <- data.frame(
+  Variable = rownames(coef_matrix),
+  Coefficient = as.numeric(coef_matrix[, 1])
+) %>%
+  filter(Coefficient != 0) %>%
+  mutate(Odds_Ratio = exp(Coefficient)) %>%
+  filter(!grepl("^event_year", Variable))  # suppress FE from output
+
+
+# -------------------------------------------------------
+# 6. Display Coefficients Table
+# -------------------------------------------------------
+non_zero_coef %>%
+  kbl(
+    caption = "Lasso Logistic Regression with Year Fixed Effects (Non-Zero Coefficients)",
+    col.names = c("Variable", "Coefficient", "Odds Ratio"),
+    align = "lcc",
+    digits = 4
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+```{r}
+# Create a flextable for Word export
+ft <- flextable(non_zero_coef)
+ft <- autofit(ft)
+ft <- set_caption(ft, caption = "Lasso Logistic Regression with Year Fixed Effects (Non-Zero Coefficients)")
+
+# Save to Word document
+doc <- read_docx() %>%
+  body_add_par("Lasso Logistic Regression Results", style = "heading 1") %>%
+  body_add_flextable(ft) %>%
+  body_add_par("")  # Add blank line for spacing
+
+print(doc, target = "Lasso_FixedEffects_Results.docx")
+```
+
+
+```{r confusion matrix to compare between year FE and no FE}
+# Predictions
+pred_noFE <- predict(model_noFE, type = "response")
+pred_FE   <- predict(model_FE, type = "response")
+
+# Binary classification
+pred_noFE_class <- ifelse(pred_noFE > 0.5, 1, 0)
+pred_FE_class   <- ifelse(pred_FE > 0.5, 1, 0)
+
+# Confusion matrices
+confusionMatrix(as.factor(pred_noFE_class), as.factor(y_test))
+confusionMatrix(as.factor(pred_FE_class), as.factor(y_test))
+
+```
+
+
+```{r}
+# Random Forest Model (FAR Part 121 and 135 Combined)
+set.seed(123)
+
+# 2. Split into training (60%) and testing (40%)
+data_imputed$fatal <- as.factor(data_imputed$fatal)
+
+train_indices <- createDataPartition(data_imputed$fatal, p = 0.6, list = FALSE)
+train_data_rf <- data_imputed[train_indices, ]
+test_data_rf  <- data_imputed[-train_indices, ]
+
+# 3. Train Random Forest model
+rf_model <- randomForest(
+  fatal ~ ., 
+  data = train_data_rf,
+  ntree = 500,
+  importance = TRUE
+)
+
+# 4. Predict on test data
+rf_predictions <- predict(rf_model, newdata = data_imputed)
+
+# 5. Extract feature importance (works for both classification and regression)
+importance_df <- as.data.frame(importance(rf_model)) %>%
+  rownames_to_column(var = "Feature")
+
+# Auto-detect the correct importance metric
+if ("%IncMSE" %in% colnames(importance_df)) {
+  importance_df <- importance_df %>% rename(Importance = `%IncMSE`)
+} else if ("MeanDecreaseAccuracy" %in% colnames(importance_df)) {
+  importance_df <- importance_df %>% rename(Importance = MeanDecreaseAccuracy)
+} else if ("MeanDecreaseGini" %in% colnames(importance_df)) {
+  importance_df <- importance_df %>% rename(Importance = MeanDecreaseGini)
+} else {
+  # Fallback (average across available numeric importance metrics)
+  importance_df <- importance_df %>%
+    mutate(Importance = rowMeans(select(., where(is.numeric)), na.rm = TRUE))
+}
+
+# Keep only the relevant columns
+importance_df <- importance_df %>%
+  select(Feature, Importance) %>%
+  arrange(desc(Importance))
+
+# 6. Display importance table
+importance_tab <- importance_df %>%
+  kbl(
+    caption = "Random Forest Feature Importance",
+    col.names = c("Variable", "Importance"),
+    align = "lc",
+    digits = 3
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+importance_tab
+
+
+```
+
+
+```{r}
+ft <- flextable(importance_df)
+ft <- autofit(ft)
+ft <- set_caption(ft, caption = "Random Forest Feature Importance")
+
+# Optionally format for a clean look
+ft <- theme_vanilla(ft)
+ft <- bold(ft, part = "header")
+ft <- align(ft, align = "center", part = "all")
+
+# Create and save the Word document
+doc <- read_docx() %>%
+  body_add_par("Random Forest Model Results", style = "heading 1") %>%
+  body_add_flextable(ft) %>%
+  body_add_par("")  # blank line for spacing
+
+print(doc, target = "RandomForest_FeatureImportance.docx")
+```
+
+
+```{r}
+# Compute ROC curves
+rf_prob <- predict(rf_model, newdata = test_data_rf, type = "prob")[, 2]  # probability of class "1"
+rf_predicted_classes <- ifelse(rf_prob > 0.5, 1, 0)
+
+roc_rf <- roc(test_data_rf$fatal, rf_prob)
+roc_lasso <- roc(y_test, as.numeric(predictions))
+
+# Plot ROC for Random Forest first
+plot(
+  roc_rf,
+  col = "blue",
+  lwd = 2,
+  main = "ROC Curves: Lasso (Year FE) vs Random Forest",
+  print.thres = "best",             # label best threshold
+  print.thres.cex = 0.8,
+  print.thres.col = "blue",
+  legacy.axes = TRUE
+)
+
+# Add Lasso curve
+plot(
+  roc_lasso,
+  col = "red",
+  lwd = 2,
+  lty = 2,
+  add = TRUE,
+  print.thres = "best",
+  print.thres.cex = 0.8,
+  print.thres.col = "red"
+)
+
+# Add legend
+legend(
+  "bottomright",
+  legend = c(
+    paste0("Random Forest (AUC = ", round(auc(roc_rf), 3), ")"),
+    paste0("Lasso (Year FE) (AUC = ", round(auc(roc_lasso), 3), ")")
+  ),
+  col = c("grey2", "grey2"),
+  lwd = 2,
+  lty = c(1, 2),
+  cex = 0.8,
+  box.lty = 0
+)
+
+```
+
+
+
+```{r}
+lasso_conf <- confusionMatrix(
+  factor(predicted_classes), 
+  factor(y_test),
+  positive = "1"
+)
+
+lasso_metrics <- data.frame(
+  Model = "Lasso (Year FE)",
+  Accuracy = round(lasso_conf$overall["Accuracy"], 2),
+  Precision = round(lasso_conf$byClass["Precision"], 2),
+  Recall = round(lasso_conf$byClass["Recall"], 2),
+  F1_Score = round(lasso_conf$byClass["F1"], 2)
+)
+
+# ---- 2. Random Forest metrics ----
+
+rf_conf <- confusionMatrix(
+  factor(rf_predicted_classes), 
+  factor(test_data_rf$fatal),
+  positive = "1"
+)
+
+rf_metrics <- data.frame(
+  Model = "Random Forest",
+  Accuracy = round(rf_conf$overall["Accuracy"], 2),
+  Precision = round(rf_conf$byClass["Precision"], 2),
+  Recall = round(rf_conf$byClass["Recall"], 2),
+  F1_Score = round(rf_conf$byClass["F1"], 2)
+)
+
+# ---- 3. Combine results ----
+model_metrics <- bind_rows(lasso_metrics, rf_metrics)
+```
+
+```{r}
+model_metrics %>%
+  kbl(
+    caption = "Model Performance Comparison",
+    col.names = c("Model", "Accuracy", "Precision", "Recall", "F1-Score"),
+    align = "lcccc",
+    digits = 2
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+```{r}
+
+ft <- flextable(model_metrics)
+ft <- set_caption(ft, caption = "Model Performance Comparison")
+ft <- autofit(ft)
+print(ft, preview = "docx", path = "Model_Performance_Comparison.docx")
+
+```
+
