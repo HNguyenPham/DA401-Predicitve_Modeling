@@ -4,7 +4,7 @@ This folder contains all output files generated from the analysis, including mod
 
 ## Contents  
 - Model output files (e.g., regression tables, feature importance)  
-- Diagnostic plots (e.g., ROC curves, residual plots)  
+- Diagnostic plots (e.g., ROC curves, VIF plot)  
 - Summary tables and reports  
 - Any additional export files generated during the analysis  
 
