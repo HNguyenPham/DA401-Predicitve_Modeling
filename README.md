@@ -16,5 +16,5 @@ review for a theoretical foundation. Between September 23 and October 7, I will 
 ## Repository Structure
 - `code/`: All analysis scripts or notebooks
 - `writing/`: Proposal, drafts, final paper
-- `figures/`: Plots, charts, visualizations
-- `data/`: Only small sample data (large files go in Google Drive)
+- `result/`: All the results from the models and figures
+- `data/`: 
