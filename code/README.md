@@ -1,7 +1,8 @@
 # Code folder
 This folder contains the analysis script for predictive modeling of fatal outcomes in commercial aviation accidents using NTSB data (2008-2024).
 ## File
-`Final_Report_[Pham].qmd` - Complete analysis pipeline including data preprocessing, MICE imputation, exploratory analysis, LASSO logistic regression with year fixed effects, Random Forest modeling, and performance evaluation
+- `data.sqbpro` - SQL file for data cleaning, merging, selecting variables, and filtering commercial aircraft accidents
+- `Final_Report_[Pham].qmd` - Complete analysis pipeline including data preprocessing, MICE imputation, exploratory analysis, LASSO logistic regression with year fixed effects, Random Forest modeling, and performance evaluation
 
 ## Required Libraries
 ### Data Manipulation and Visualization
